@@ -391,21 +391,21 @@ _wt_cmd_ls() {
   printf "%-3s %-40s  %-30s  %-7s  %s\n" "" "PATH" "BRANCH" "SHA" "STATUS"
   printf "%-3s %-40s  %-30s  %-7s  %s\n" "" "----" "------" "---" "------"
 
-  while IFS='|' read -r path branch sha; do
-    local rel_path
-    rel_path="$(python3 -c "import os; print(os.path.relpath('$path'))" 2>/dev/null || echo "$path")"
+  local rel_path marker dirty_marker wt_path wt_branch wt_sha
+  while IFS='|' read -r wt_path wt_branch wt_sha; do
+    rel_path="$(python3 -c "import os; print(os.path.relpath('$wt_path'))" 2>/dev/null || echo "$wt_path")"
 
-    local marker=""
-    if [[ "$path" == "$current_root" ]]; then
+    marker=""
+    if [[ "$wt_path" == "$current_root" ]]; then
       marker="*"
     fi
 
-    local status=""
-    if _wt_is_dirty "$path"; then
-      status="●"
+    dirty_marker=""
+    if _wt_is_dirty "$wt_path"; then
+      dirty_marker="●"
     fi
 
-    printf "%-3s %-40s  %-30s  %-7s  %s\n" "$marker" "$rel_path" "$branch" "$sha" "$status"
+    printf "%-3s %-40s  %-30s  %-7s  %s\n" "$marker" "$rel_path" "$wt_branch" "$wt_sha" "$dirty_marker"
   done <<< "$lines"
 }
 
