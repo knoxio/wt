@@ -52,10 +52,11 @@ send/poll protocol. Follow the same announce-before-acting rules as any other pr
 ## Expected behaviour
 
 ### On starting work
-1. Poll for recent history: `room poll <room-id> <username>`
-2. Announce yourself and **propose your plan**: which functions in `wt.zsh` you will
+1. Join the room if you don't have a token: `room join <room-id> <username>`
+2. Poll for recent history: `room poll <room-id>`
+3. Announce yourself and **propose your plan**: which functions in `wt.zsh` you will
    modify and why.
-3. Poll again after ~30 seconds. Silence means proceed.
+4. Poll again after ~30 seconds. Silence means proceed.
 
 ### During work
 - **`wt.zsh` is the only shared file.** Any agent touching it must announce intent first.
