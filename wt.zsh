@@ -225,7 +225,7 @@ _wt_sync_files() {
   local tmpfile
   tmpfile="$(mktemp)"
   git -C "$src" ls-files --others --exclude-standard \
-    | grep -Ev '^(node_modules|\.git|\.next|dist|out|build|\.turbo|coverage|\.nyc_output|target)/' \
+    | grep -Ev '(^|/)(node_modules|\.git|\.next|dist|out|build|\.turbo|coverage|\.nyc_output|target)/' \
     > "$tmpfile" || true
   if [[ -s "$tmpfile" ]]; then
     echo "wt sync: copying untracked files..." >&2
