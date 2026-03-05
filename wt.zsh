@@ -1,6 +1,7 @@
 # wt — git worktree management suite
 # Single-file implementation (required: cd must run in the calling shell)
 # Source this file from .zshrc
+# shellcheck shell=bash
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -105,10 +106,11 @@ _wt_worktree_for_branch() {
 # Returns lines of "path|branch|sha" for all worktrees
 _wt_list_worktrees() {
   git worktree list --porcelain | awk '
-    /^worktree / { path = substr($0, 10) }
-    /^HEAD /     { sha = substr($0, 6, 7) }
-    /^branch /   { b = substr($0, 8); sub("^refs/heads/", "", b) }
-    /^(bare)?$/  {
+    /^worktree /  { path = substr($0, 10) }
+    /^HEAD /      { sha = substr($0, 6, 7) }
+    /^branch /    { b = substr($0, 8); sub("^refs/heads/", "", b) }
+    /^detached$/  { b = "(detached)" }
+    /^(bare)?$/   {
       if (path != "") print path "|" b "|" sha
       path=""; b=""; sha=""
     }
@@ -214,7 +216,9 @@ _wt_sync_files() {
   git -C "$src" ls-files --others --exclude-standard \
     | grep -Ev '^(node_modules|\.git|\.next|dist|out|build|\.turbo|coverage|\.nyc_output)/' \
     > "$tmpfile" || true
+  local files_synced=false
   if [[ -s "$tmpfile" ]]; then
+    files_synced=true
     echo "wt sync: copying untracked files..." >&2
     rsync -a "${excludes[@]}" --files-from="$tmpfile" "$src/" "$dst/"
   fi
@@ -233,7 +237,7 @@ _wt_sync_files() {
   local found_any=false
   while IFS= read -r src_file; do
     found_any=true
-    local rel_path="${src_file#$src/}"
+    local rel_path="${src_file#"$src"/}"
     local dst_file="$dst/$rel_path"
     local dst_dir
     dst_dir="$(dirname "$dst_file")"
@@ -248,7 +252,7 @@ _wt_sync_files() {
     \( "${env_patterns[@]}" \) \
     -type f 2>/dev/null)
 
-  if ! $found_any && ! [[ -s "$tmpfile" ]]; then
+  if ! $found_any && ! $files_synced; then
     echo "wt sync: nothing to sync" >&2
   fi
 }
@@ -572,9 +576,10 @@ _wt_cmd_rm() {
   git worktree prune
 
   if ! $keep_branch; then
-    git branch -d "$branch" 2>/dev/null || \
-      git branch -D "$branch" 2>/dev/null || \
-      echo "wt: could not delete branch '$branch' (may not exist locally)" >&2
+    if ! git branch -d "$branch" 2>/dev/null; then
+      echo "wt: branch '$branch' has unmerged commits and was not deleted" >&2
+      echo "     merge or use --keep-branch to preserve it" >&2
+    fi
   fi
 
   echo "wt: done"

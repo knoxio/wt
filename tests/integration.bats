@@ -87,6 +87,18 @@ load helpers
   [[ "$output" =~ ^.+\|main\|[0-9a-f]{7}$ ]]
 }
 
+@test "list_worktrees: detached HEAD worktree shows (detached) as branch" {
+  local base="$BATS_TEST_TMPDIR/repos"
+  setup_repo "$base/main"
+  local sha
+  sha="$(git -C "$base/main" rev-parse HEAD)"
+  git -C "$base/main" worktree add --detach "$base/detached" "$sha"
+
+  run zsh -c "source '$WT_ZSH' && cd '$base/main' && _wt_list_worktrees"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "(detached)" ]]
+}
+
 @test "list_worktrees: additional worktree appears in output" {
   local base="$BATS_TEST_TMPDIR/repos"
   setup_repo "$base/main"
@@ -268,6 +280,24 @@ load helpers
   [ ! -d "$base/dirty-force" ]
 }
 
+@test "wt rm: prints warning and keeps unmerged branch instead of force-deleting" {
+  local base="$BATS_TEST_TMPDIR/repos"
+  setup_repo "$base/main"
+  git -C "$base/main" worktree add -q -b unmerged-wt "$base/unmerged-wt"
+  # Add a commit to the worktree branch so git branch -d refuses it
+  echo "unmerged" > "$base/unmerged-wt/unmerged.txt"
+  git -C "$base/unmerged-wt" add .
+  git -C "$base/unmerged-wt" commit -q -m "unmerged commit"
+
+  run zsh -c "source '$WT_ZSH' && cd '$base/main' && _wt_cmd_rm unmerged-wt"
+  [ "$status" -eq 0 ]
+  # Worktree directory is removed ...
+  [ ! -d "$base/unmerged-wt" ]
+  # ... but branch still exists (not force-deleted)
+  run git -C "$base/main" branch --list unmerged-wt
+  [[ "$output" =~ "unmerged-wt" ]]
+}
+
 @test "wt rm: fails with helpful message for non-existent branch" {
   local repo="$BATS_TEST_TMPDIR/repo"
   setup_repo "$repo"
@@ -405,6 +435,18 @@ load helpers
   [ "$status" -eq 0 ]
   # rsync default: src wins on untracked files; that's expected behaviour —
   # just verify the command completes without error
+}
+
+@test "sync_files: prints nothing-to-sync message when no untracked or env files" {
+  local base="$BATS_TEST_TMPDIR/sync-empty"
+  setup_repo "$base/src"
+  local dst="$base/dst"
+  mkdir -p "$dst"
+  # No untracked files, no env files — only committed content
+
+  run zsh -c "source '$WT_ZSH' && _wt_sync_files '$base/src' '$dst'"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "nothing to sync" ]]
 }
 
 @test "sync_files: preserves nested path structure for env files" {
