@@ -131,18 +131,23 @@ _wt_fzf_pick() {
     return 1
   fi
 
+  # Build tab-separated lines: <abs_path>\t<display>
+  # The absolute path in field 1 is used for preview and selection;
+  # --with-nth=2.. hides it from the displayed list.
+  local display_lines=""
+  local _fp_abs _fp_branch _fp_sha _fp_rel _fp_marker
+  while IFS='|' read -r _fp_abs _fp_branch _fp_sha; do
+    _fp_rel="$(python3 -c 'import sys,os; print(os.path.relpath(sys.argv[1]))' -- "$_fp_abs" 2>/dev/null || echo "$_fp_abs")"
+    _fp_marker="  "
+    [[ "$_fp_abs" == "$current_root" ]] && _fp_marker="* "
+    display_lines+="${_fp_abs}"$'\t'"${_fp_marker}$(printf '%-40s  %-30s  %s' "$_fp_rel" "$_fp_branch" "$_fp_sha")"$'\n'
+  done <<< "$lines"
+
   local selected
-  selected="$(echo "$lines" | awk -F'|' -v cur="$current_root" '
-    {
-      rel = $1
-      cmd = "python3 -c \"import os; print(os.path.relpath('"'"'" $1 "'"'"'))\" 2>/dev/null"
-      cmd | getline rel
-      close(cmd)
-      marker = ($1 == cur) ? "* " : "  "
-      printf "%s%-40s  %-30s  %s\n", marker, rel, $2, $3
-    }
-  ' | fzf --ansi --prompt="worktree> " \
-       --preview="git -C \$(echo {} | awk '{print \$1}') log --oneline -15 2>/dev/null" \
+  selected="$(printf '%s' "$display_lines" | fzf --ansi --prompt="worktree> " \
+       --delimiter=$'\t' \
+       --with-nth=2.. \
+       --preview='git -C {1} log --oneline -15 2>/dev/null' \
        --preview-window=right:50% \
        --height=40%)"
 
@@ -150,14 +155,8 @@ _wt_fzf_pick() {
     return 1
   fi
 
-  # Extract relative path from selection, resolve back to absolute
-  local rel_path
-  rel_path="$(echo "$selected" | awk '{print $1}')"
-  # Remove leading * marker if present
-  rel_path="${rel_path#\*}"
-  # The awk already outputs relative path; resolve from cwd
-  python3 -c "import os; print(os.path.abspath('$rel_path'))" 2>/dev/null || \
-    echo "$rel_path"
+  # First tab field is the absolute path
+  printf '%s' "$selected" | cut -f1
 }
 
 # zsh select fallback when fzf not available
@@ -269,17 +268,22 @@ _wt_open_in_editor() {
   "$editor" "$_editor_target"
 }
 
-# Open a new Terminal.app window/tab at path
+# Open a new Terminal.app window/tab at path (macOS only)
 _wt_open_terminal() {
   local _term_target="$1"
+  if ! command -v osascript &>/dev/null; then
+    echo "wt: --sh requires osascript (macOS only)" >&2
+    echo "     worktree path: $_term_target" >&2
+    return 1
+  fi
   local escaped="${_term_target//\'/\'\\\'\'}"
-  osascript <<APPLESCRIPT 2>/dev/null
+  if ! osascript <<APPLESCRIPT 2>/dev/null
 tell application "Terminal"
     activate
     do script "cd '$escaped'"
 end tell
 APPLESCRIPT
-  if [[ $? -ne 0 ]]; then
+  then
     echo "wt: failed to open Terminal.app (check Automation permissions)" >&2
     echo "     System Settings → Privacy & Security → Automation" >&2
     echo "     path: $_term_target" >&2
@@ -338,6 +342,13 @@ _wt_cmd_new() {
     return 1
   fi
 
+  # Pre-check: refuse if branch already exists to give a clear error
+  if git rev-parse --verify "$branch" &>/dev/null; then
+    echo "wt: branch '$branch' already exists" >&2
+    echo "     use 'wt go $branch' if the worktree already exists, or choose a different branch name" >&2
+    return 1
+  fi
+
   # Determine source ref
   local source_ref
   if $here; then
@@ -351,17 +362,12 @@ _wt_cmd_new() {
   local current_root
   current_root="$(_wt_repo_root)"
 
-  # Set up ERR trap for cleanup
-  local _wt_new_cleanup_path="$worktree_path"
-  _wt_new_cleanup() {
-    echo "wt: error — cleaning up worktree..." >&2
-    git worktree remove --force "$_wt_new_cleanup_path" 2>/dev/null
-    git worktree prune 2>/dev/null
-  }
-  trap '_wt_new_cleanup' ERR
-
   echo "wt: creating worktree '$sanitized' from '$source_ref'..."
-  git worktree add -b "$branch" "$worktree_path" "$source_ref"
+  if ! git worktree add -b "$branch" "$worktree_path" "$source_ref"; then
+    echo "wt: error — failed to create worktree" >&2
+    git worktree prune 2>/dev/null
+    return 1
+  fi
 
   echo "wt: syncing files..."
   _wt_sync_files "$current_root" "$worktree_path"
@@ -373,9 +379,6 @@ _wt_cmd_new() {
     echo "wt: running $pm install..."
     (cd "$worktree_path" && "$pm" install)
   fi
-
-  # Remove ERR trap
-  trap - ERR
 
   if $do_open; then
     _wt_open_in_editor "$worktree_path"
@@ -409,7 +412,7 @@ _wt_cmd_ls() {
 
   local rel_path marker dirty_marker wt_path wt_branch wt_sha
   while IFS='|' read -r wt_path wt_branch wt_sha; do
-    rel_path="$(python3 -c "import os; print(os.path.relpath('$wt_path'))" 2>/dev/null || echo "$wt_path")"
+    rel_path="$(python3 -c 'import sys,os; print(os.path.relpath(sys.argv[1]))' -- "$wt_path" 2>/dev/null || echo "$wt_path")"
 
     marker=""
     if [[ "$wt_path" == "$current_root" ]]; then
@@ -484,25 +487,26 @@ _wt_cmd_go() {
       local lines
       lines="$(_wt_list_worktrees)"
 
+      local display_lines=""
+      local _go_abs _go_branch _go_sha _go_rel _go_marker
+      while IFS='|' read -r _go_abs _go_branch _go_sha; do
+        _go_rel="$(python3 -c 'import sys,os; print(os.path.relpath(sys.argv[1]))' -- "$_go_abs" 2>/dev/null || echo "$_go_abs")"
+        _go_marker="  "
+        [[ "$_go_abs" == "$current_root" ]] && _go_marker="* "
+        display_lines+="${_go_abs}"$'\t'"${_go_marker}$(printf '%-40s  %-30s  %s' "$_go_rel" "$_go_branch" "$_go_sha")"$'\n'
+      done <<< "$lines"
+
       local selected
-      selected="$(echo "$lines" | awk -F'|' -v cur="$current_root" '{
-        rel = $1
-        cmd = "python3 -c \"import os; print(os.path.relpath('"'"'" $1 "'"'"'))\" 2>/dev/null"
-        cmd | getline rel
-        close(cmd)
-        marker = ($1 == cur) ? "* " : "  "
-        printf "%s%-40s  %-30s  %s\n", marker, rel, $2, $3
-      }' | fzf --prompt="worktree> " \
-           --preview='branch=$(echo {} | awk "{print \$2}"); path=$(git worktree list 2>/dev/null | grep -F " [$branch]" | awk "{print \$1}" | head -1); git -C "${path:-.}" log --oneline -15 2>/dev/null' \
+      selected="$(printf '%s' "$display_lines" | fzf --prompt="worktree> " \
+           --delimiter=$'\t' \
+           --with-nth=2.. \
+           --preview='git -C {1} log --oneline -15 2>/dev/null' \
            --preview-window=right:50% \
            --height=40%)"
 
       if [[ -z "$selected" ]]; then return 1; fi
 
-      # Parse the selected line: strip marker, get relative path
-      local rel
-      rel="$(echo "$selected" | sed 's/^[* ] *//' | awk '{print $1}')"
-      target_path="$(python3 -c "import os; print(os.path.abspath('$rel'))" 2>/dev/null || echo "$rel")"
+      target_path="$(printf '%s' "$selected" | cut -f1)"
     else
       # Fallback select
       target_path="$(_wt_select_pick)"
@@ -519,7 +523,7 @@ _wt_cmd_go() {
     return 1
   fi
 
-  cd "$target_path"
+  cd "$target_path" || return 1
 }
 
 _wt_cmd_rm() {
@@ -602,20 +606,23 @@ _wt_cmd_open() {
       local current_root
       current_root="$(_wt_repo_root)"
 
+      local display_lines=""
+      local _open_abs _open_branch _open_sha _open_rel _open_marker
+      while IFS='|' read -r _open_abs _open_branch _open_sha; do
+        _open_rel="$(python3 -c 'import sys,os; print(os.path.relpath(sys.argv[1]))' -- "$_open_abs" 2>/dev/null || echo "$_open_abs")"
+        _open_marker="  "
+        [[ "$_open_abs" == "$current_root" ]] && _open_marker="* "
+        display_lines+="${_open_abs}"$'\t'"${_open_marker}$(printf '%-40s  %-30s  %s' "$_open_rel" "$_open_branch" "$_open_sha")"$'\n'
+      done <<< "$(_wt_list_worktrees)"
+
       local selected
-      selected="$(_wt_list_worktrees | awk -F'|' -v cur="$current_root" '{
-        rel = $1
-        cmd = "python3 -c \"import os; print(os.path.relpath('"'"'" $1 "'"'"'))\" 2>/dev/null"
-        cmd | getline rel
-        close(cmd)
-        marker = ($1 == cur) ? "* " : "  "
-        printf "%s%-40s  %-30s  %s\n", marker, rel, $2, $3
-      }' | fzf --prompt="open in editor> " --height=40%)"
+      selected="$(printf '%s' "$display_lines" | fzf --prompt="open in editor> " \
+           --delimiter=$'\t' \
+           --with-nth=2.. \
+           --height=40%)"
 
       if [[ -z "$selected" ]]; then return 1; fi
-      local rel
-      rel="$(echo "$selected" | sed 's/^[* ] *//' | awk '{print $1}')"
-      target_path="$(python3 -c "import os; print(os.path.abspath('$rel'))" 2>/dev/null || echo "$rel")"
+      target_path="$(printf '%s' "$selected" | cut -f1)"
     else
       target_path="$(_wt_select_pick)"
     fi
@@ -645,21 +652,23 @@ _wt_cmd_sync() {
     fi
   else
     if command -v fzf &>/dev/null; then
+      local display_lines=""
+      local _sync_abs _sync_branch _sync_sha _sync_rel
+      while IFS='|' read -r _sync_abs _sync_branch _sync_sha; do
+        if [[ "$_sync_abs" != "$current_root" ]]; then
+          _sync_rel="$(python3 -c 'import sys,os; print(os.path.relpath(sys.argv[1]))' -- "$_sync_abs" 2>/dev/null || echo "$_sync_abs")"
+          display_lines+="${_sync_abs}"$'\t'"$(printf '%-40s  %-30s  %s' "$_sync_rel" "$_sync_branch" "$_sync_sha")"$'\n'
+        fi
+      done <<< "$(_wt_list_worktrees)"
+
       local selected
-      selected="$(_wt_list_worktrees | awk -F'|' -v cur="$current_root" '{
-        if ($1 != cur) {
-          rel = $1
-          cmd = "python3 -c \"import os; print(os.path.relpath('"'"'" $1 "'"'"'))\" 2>/dev/null"
-          cmd | getline rel
-          close(cmd)
-          printf "%-40s  %-30s  %s\n", rel, $2, $3
-        }
-      }' | fzf --prompt="sync to> " --height=40%)"
+      selected="$(printf '%s' "$display_lines" | fzf --prompt="sync to> " \
+           --delimiter=$'\t' \
+           --with-nth=2.. \
+           --height=40%)"
 
       if [[ -z "$selected" ]]; then return 1; fi
-      local rel
-      rel="$(echo "$selected" | awk '{print $1}')"
-      target_path="$(python3 -c "import os; print(os.path.abspath('$rel'))" 2>/dev/null || echo "$rel")"
+      target_path="$(printf '%s' "$selected" | cut -f1)"
     else
       target_path="$(_wt_select_pick)"
     fi
@@ -735,3 +744,42 @@ wt() {
       ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# Shell completion (bash-compatible; works in zsh with bashcompinit)
+# ---------------------------------------------------------------------------
+
+_wt_completion() {
+  local cur="${COMP_WORDS[COMP_CWORD]:-}"
+  local prev="${COMP_WORDS[COMP_CWORD-1]:-}"
+
+  COMPREPLY=()
+
+  case "$prev" in
+    go|rm|open|sync)
+      local _b
+      while IFS= read -r _b; do
+        [[ "$_b" == "${cur}"* ]] && COMPREPLY+=("$_b")
+      done < <(git worktree list --porcelain 2>/dev/null | awk '/^branch / { b = substr($0, 8); sub("^refs/heads/","",b); print b }')
+      ;;
+    wt)
+      local _c
+      for _c in new ls go rm open sync prune help; do
+        [[ "$_c" == "${cur}"* ]] && COMPREPLY+=("$_c")
+      done
+      ;;
+    new)
+      local _f
+      for _f in --from --here --no-deps --open --sh --dir; do
+        [[ "$_f" == "${cur}"* ]] && COMPREPLY+=("$_f")
+      done
+      ;;
+  esac
+}
+
+# Register completion when the complete builtin is available.
+# zsh users: load bashcompinit first (autoload -U bashcompinit && bashcompinit)
+# then source this file to activate completion.
+if command -v complete &>/dev/null 2>&1; then
+  complete -F _wt_completion wt
+fi

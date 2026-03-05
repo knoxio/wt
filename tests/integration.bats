@@ -462,3 +462,42 @@ load helpers
   [ "$status" -eq 0 ]
   [ -f "$dst/apps/api/.env" ]
 }
+
+# ---------------------------------------------------------------------------
+# wt new: branch pre-existence check (#7)
+# ---------------------------------------------------------------------------
+
+@test "wt new: fails with clear error when branch already exists" {
+  local base="$BATS_TEST_TMPDIR/repos"
+  setup_repo "$base/main"
+  # 'main' branch already exists on the repo
+  run zsh -c "source '$WT_ZSH' && cd '$base/main' && _wt_cmd_new main --here --no-deps"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "already exists" ]]
+  # No worktree directory should have been created
+  [ ! -d "$base/main2" ]
+}
+
+@test "wt new: succeeds for a genuinely new branch name" {
+  local base="$BATS_TEST_TMPDIR/repos"
+  setup_repo "$base/main"
+  run zsh -c "source '$WT_ZSH' && cd '$base/main' && _wt_cmd_new brand-new --here --no-deps"
+  [ "$status" -eq 0 ]
+  [ -d "$base/brand-new" ]
+}
+
+# ---------------------------------------------------------------------------
+# _wt_open_terminal: osascript guard (#9)
+# ---------------------------------------------------------------------------
+
+@test "open_terminal: fails with clear message when osascript is unavailable" {
+  # Use an empty tmpdir as PATH so no executables (including osascript) are found
+  local empty_bin="$BATS_TEST_TMPDIR/empty-bin"
+  mkdir -p "$empty_bin"
+  run zsh -c "
+    source '$WT_ZSH'
+    PATH='$empty_bin' _wt_open_terminal /some/path
+  "
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "macOS" ]]
+}
